@@ -326,6 +326,20 @@ nav{
   .panel-header,.panel-body{max-width:820px;}
 }
 
+/* ── UNIT TOGGLE ── */
+.unit-toggle{
+  display:flex;align-items:center;gap:0;
+  background:var(--navy2);border:1px solid var(--border);
+  border-radius:20px;overflow:hidden;flex-shrink:0;
+}
+.unit-btn{
+  padding:5px 12px;font-family:'DM Mono',monospace;
+  font-size:var(--fs-xs);border:none;background:none;
+  color:var(--muted);cursor:pointer;transition:all .2s;
+  white-space:nowrap;
+}
+.unit-btn.active{background:var(--water);color:var(--white);}
+
 /* ── SCROLLBAR ── */
 ::-webkit-scrollbar{width:4px;}
 ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
@@ -334,7 +348,13 @@ nav{
 <body>
 <header>
   <div class="logo">⚓ Nav<span>Mate</span></div>
-  <div class="gps-pill"><div class="gps-dot" id="gpsDot"></div><span id="gpsLabel">KEIN GPS</span></div>
+  <div style="display:flex;align-items:center;gap:8px;">
+    <div class="unit-toggle">
+      <button class="unit-btn active" id="btnNm" onclick="setUnit('nm')">nm</button>
+      <button class="unit-btn" id="btnKm" onclick="setUnit('km')">km</button>
+    </div>
+    <div class="gps-pill"><div class="gps-dot" id="gpsDot"></div><span id="gpsLabel">KEIN GPS</span></div>
+  </div>
 </header>
 
 <div id="mapArea">
@@ -369,7 +389,7 @@ nav{
 <div class="panel" id="panelRoute">
   <div class="panel-header"><button class="back-btn" onclick="showPanel('map')">←</button><span class="panel-title">ROUTE & WEGPUNKTE</span></div>
   <div class="panel-body">
-    <div class="dist-row"><span class="stat-label">GESAMTSTRECKE</span><span><span style="font-family:'Teko',sans-serif;font-size:28px;color:var(--gold);" id="totalDist">0.0</span> <span style="font-size:12px;color:var(--muted)">nm</span></span></div>
+    <div class="dist-row"><span class="stat-label">GESAMTSTRECKE</span><span><span style="font-family:'Teko',sans-serif;font-size:28px;color:var(--gold);" id="totalDist">0.0</span> <span style="font-size:12px;color:var(--muted)" id="distUnit">nm</span></span></div>
     <div class="hint" id="wpHint">Route-Modus via ✏️ aktivieren,<br>dann auf die Karte tippen.</div>
     <div id="wpList"></div>
   </div>
@@ -402,9 +422,9 @@ nav{
     <div class="result-box" id="fuelResult">
       <div class="result-row"><span class="rk">Nutzbare Kraftstoffmenge</span><span><span class="rn" id="rUsable">–</span><span class="ru">L</span></span></div>
       <div class="result-row"><span class="rk">Max. Fahrzeit</span><span><span class="rn" id="rTime">–</span><span class="ru">Std.</span></span></div>
-      <div class="result-row"><span class="rk">Max. Reichweite</span><span><span class="rn" id="rRange">–</span><span class="ru">nm</span></span></div>
-      <div class="result-row"><span class="rk">Verbrauch / Seemeile</span><span><span class="rn" id="rPerNm">–</span><span class="ru">L/nm</span></span></div>
-      <div class="result-row"><span class="rk">Empfohlener Umkehrpunkt</span><span><span class="rn" id="rTurn">–</span><span class="ru">nm</span></span></div>
+      <div class="result-row"><span class="rk">Max. Reichweite</span><span><span class="rn" id="rRange">–</span><span class="ru" id="rRangeUnit">nm</span></span></div>
+      <div class="result-row"><span class="rk">Verbrauch / <span id="rPerLabel">Seemeile</span></span><span><span class="rn" id="rPerNm">–</span><span class="ru" id="rPerUnit">L/nm</span></span></div>
+      <div class="result-row"><span class="rk">Empfohlener Umkehrpunkt</span><span><span class="rn" id="rTurn">–</span><span class="ru" id="rTurnUnit">nm</span></span></div>
     </div>
     <div id="fuelWarn" style="display:none;background:rgba(232,75,75,.1);border:1px solid var(--red);border-radius:10px;padding:12px 14px;margin-top:12px;font-size:13px;color:#ff9a9a;">⚠️ Reichweite unter 10 Seemeilen! Bitte auftanken.</div>
   </div>
@@ -419,234 +439,418 @@ nav{
 <div class="toast" id="toast"></div>
 
 <script>
-// ════════════════════════════════════
-// CANVAS TILE MAP
-// ════════════════════════════════════
+'use strict';
+
+// ══════════════════════════════════════════
+// GLOBAL ERROR GUARD
+// ══════════════════════════════════════════
+window.addEventListener('error', e => {
+  console.error('NavMate error:', e.message, e.filename, e.lineno);
+});
+window.addEventListener('unhandledrejection', e => {
+  console.error('NavMate promise error:', e.reason);
+  e.preventDefault();
+});
+
+// ══════════════════════════════════════════
+// CANVAS TILE MAP  –  crash-hardened
+// ══════════════════════════════════════════
 const canvas = document.getElementById('mapCanvas');
 const ctx = canvas.getContext('2d');
-let view = {lat:54.3, lng:10.1, zoom:9};
-let drag = {active:false, sx:0, sy:0, slat:0, slng:0};
-let tileCache = {};
-let waypoints = [];
-let routeMode = false;
-let boatPos = null;
-let lastTouchTime = 0, lastTouchX = 0, lastTouchY = 0;
 
+// State
+let view       = {lat:54.3, lng:10.1, zoom:9};
+let drag       = {active:false, sx:0, sy:0, slat:0, slng:0};
+let pinch      = {active:false, d0:0, z0:9};
+let waypoints  = [];
+let routeMode  = false;
+let boatPos    = null;
+let drawPending = false;   // rAF gate – prevents redundant redraws
+
+// ── UNIT SYSTEM ──
+let useKm = false;
+const NM_TO_KM = 1.852;
+
+function setUnit(u) {
+  useKm = (u === 'km');
+  document.getElementById('btnNm').classList.toggle('active', !useKm);
+  document.getElementById('btnKm').classList.toggle('active',  useKm);
+  updateRoute();          // refreshes route distance display
+  updateFuelUnits();      // refreshes fuel result if visible
+  showToast(useKm ? 'Einheit: Kilometer' : 'Einheit: Seemeilen');
+}
+
+function fmtDist(nm) {
+  // Convert nm value to display string + unit label
+  if (useKm) return { val: (nm * NM_TO_KM).toFixed(1), unit: 'km' };
+  return { val: nm.toFixed(1), unit: 'nm' };
+}
+
+// Last calculated fuel values in nm (raw), so we can re-render on unit switch
+let _lastFuelNm = null;
+
+function updateFuelUnits() {
+  if (!_lastFuelNm) return;
+  const {range, perNm, turn} = _lastFuelNm;
+  const r = fmtDist(range), p = fmtDist(perNm), t = fmtDist(turn);
+  document.getElementById('rRange').textContent  = r.val;
+  document.getElementById('rRangeUnit').textContent = r.unit;
+  document.getElementById('rPerNm').textContent  = (useKm
+    ? (_lastFuelNm.consRaw / (_lastFuelNm.speedRaw * NM_TO_KM)).toFixed(2)
+    : (_lastFuelNm.consRaw /  _lastFuelNm.speedRaw).toFixed(1));
+  document.getElementById('rPerUnit').textContent  = useKm ? 'L/km' : 'L/nm';
+  document.getElementById('rPerLabel').textContent = useKm ? 'Kilometer' : 'Seemeile';
+  document.getElementById('rTurn').textContent     = t.val;
+  document.getElementById('rTurnUnit').textContent = t.unit;
+}
+
+// Tile cache with LRU eviction (max 300 tiles ≈ ~20 MB)
+const CACHE_MAX = 300;
+const tileCache  = new Map();   // key → {img|'err'|null, ts}
+
+function cachePut(key, val) {
+  if (tileCache.size >= CACHE_MAX) {
+    // evict oldest
+    let oldest = Infinity, oldKey = null;
+    for (const [k, v] of tileCache) {
+      if (v.ts < oldest) { oldest = v.ts; oldKey = k; }
+    }
+    if (oldKey) tileCache.delete(oldKey);
+  }
+  tileCache.set(key, {img: val, ts: Date.now()});
+}
+
+// ── RESIZE (safe) ──
 function resize() {
-  const area = document.getElementById('mapArea');
-  canvas.width = area.offsetWidth;
-  canvas.height = area.offsetHeight;
-  draw();
+  try {
+    const area = document.getElementById('mapArea');
+    const w = area.offsetWidth, h = area.offsetHeight;
+    if (w > 0 && h > 0) {
+      canvas.width  = w;
+      canvas.height = h;
+    }
+  } catch(e) { console.warn('resize error', e); }
+  scheduleDraw();
 }
 
-// Tile coord helpers
-function lng2tx(lng, z) { return (lng+180)/360 * (1<<z); }
+// ── TILE MATH ──
+function lng2tx(lng, z) { return (lng + 180) / 360 * (1 << z); }
 function lat2ty(lat, z) {
-  const s = Math.sin(lat*Math.PI/180);
-  return (0.5 - Math.log((1+s)/(1-s))/(4*Math.PI)) * (1<<z);
+  const s = Math.sin(lat * Math.PI / 180);
+  return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * (1 << z);
 }
-function tx2lng(tx, z) { return tx/(1<<z)*360-180; }
+function tx2lng(tx, z) { return tx / (1 << z) * 360 - 180; }
 function ty2lat(ty, z) {
-  const n = Math.PI - 2*Math.PI*ty/(1<<z);
-  return 180/Math.PI*Math.atan(0.5*(Math.exp(n)-Math.exp(-n)));
+  const n = Math.PI - 2 * Math.PI * ty / (1 << z);
+  return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
 }
-
 function ll2px(lat, lng) {
   const z = Math.round(view.zoom), TS = 256;
-  const cx = canvas.width/2, cy = canvas.height/2;
-  const ctx_ = lng2tx(view.lng, z), cty = lat2ty(view.lat, z);
-  return {x: cx + (lng2tx(lng,z)-ctx_)*TS, y: cy + (lat2ty(lat,z)-cty)*TS};
+  const cx = canvas.width / 2, cy = canvas.height / 2;
+  const vx = lng2tx(view.lng, z), vy = lat2ty(view.lat, z);
+  return { x: cx + (lng2tx(lng, z) - vx) * TS,
+           y: cy + (lat2ty(lat, z) - vy) * TS };
 }
 function px2ll(x, y) {
   const z = Math.round(view.zoom), TS = 256;
-  const cx = canvas.width/2, cy = canvas.height/2;
-  const ctx_ = lng2tx(view.lng, z), cty = lat2ty(view.lat, z);
-  return {lat: ty2lat(cty+(y-cy)/TS, z), lng: tx2lng(ctx_+(x-cx)/TS, z)};
+  const cx = canvas.width / 2, cy = canvas.height / 2;
+  const vx = lng2tx(view.lng, z), vy = lat2ty(view.lat, z);
+  return { lat: ty2lat(vy + (y - cy) / TS, z),
+           lng: tx2lng(vx + (x - cx) / TS, z) };
 }
 
+// ── TILE FETCH ──
 function getTile(url, key) {
-  if (tileCache[key]) return tileCache[key];
+  const cached = tileCache.get(key);
+  if (cached) { cached.ts = Date.now(); return cached.img; }
+  // Start loading
+  cachePut(key, null);   // mark as in-flight
   const img = new Image();
   img.crossOrigin = 'anonymous';
-  img.onload = () => { tileCache[key]=img; draw(); };
-  img.onerror = () => { tileCache[key]='err'; };
+  img.onload  = () => { cachePut(key, img); scheduleDraw(); };
+  img.onerror = () => { cachePut(key, 'err'); };
   img.src = url;
-  tileCache[key] = null;
   return null;
 }
 
-function draw() {
-  const W = canvas.width, H = canvas.height;
-  if (!W||!H) return;
-  ctx.fillStyle='#0d1f35';
-  ctx.fillRect(0,0,W,H);
-
-  const z = Math.round(view.zoom), TS = 256, maxT = 1<<z;
-  const cx = W/2, cy = H/2;
-  const ctx_ = lng2tx(view.lng,z), cty = lat2ty(view.lat,z);
-  const tx0 = Math.floor(ctx_), ty0 = Math.floor(cty);
-  const tilesX = Math.ceil(W/TS/2)+2, tilesY = Math.ceil(H/TS/2)+2;
-
-  for (let dy=-tilesY; dy<=tilesY; dy++) {
-    for (let dx=-tilesX; dx<=tilesX; dx++) {
-      const tx = tx0+dx, ty = ty0+dy;
-      if (ty<0||ty>=maxT) continue;
-      const txw = ((tx%maxT)+maxT)%maxT;
-      const px = Math.round(cx+(tx-ctx_)*TS);
-      const py = Math.round(cy+(ty-cty)*TS);
-      const sub = ['a','b','c'][txw%3];
-      const url = `https://${sub}.tile.openstreetmap.org/${z}/${txw}/${ty}.png`;
-      const key = `${z}/${txw}/${ty}`;
-      const img = getTile(url, key);
-      if (img && img!=='err') ctx.drawImage(img, px, py, TS, TS);
-    }
-  }
-
-  // Route line
-  if (waypoints.length>0) {
-    const pts = boatPos ? [boatPos,...waypoints] : waypoints;
-    ctx.beginPath();
-    ctx.strokeStyle='#4dc8e8'; ctx.lineWidth=2.5;
-    ctx.setLineDash([10,5]);
-    pts.forEach((w,i) => {
-      const p=ll2px(w.lat,w.lng);
-      i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y);
-    });
-    ctx.stroke(); ctx.setLineDash([]);
-
-    // Waypoint circles
-    waypoints.forEach((w,i) => {
-      const p=ll2px(w.lat,w.lng);
-      ctx.beginPath(); ctx.arc(p.x,p.y,10,0,Math.PI*2);
-      ctx.fillStyle='#1a7fa0'; ctx.fill();
-      ctx.strokeStyle='#4dc8e8'; ctx.lineWidth=2; ctx.stroke();
-      ctx.fillStyle='#fff'; ctx.font='bold 11px monospace';
-      ctx.textAlign='center'; ctx.textBaseline='middle';
-      ctx.fillText(i+1,p.x,p.y);
-    });
-  }
-
-  // Boat
-  if (boatPos) {
-    const p=ll2px(boatPos.lat,boatPos.lng);
-    ctx.beginPath(); ctx.arc(p.x,p.y,22,0,Math.PI*2);
-    ctx.fillStyle='rgba(75,232,122,0.12)'; ctx.fill();
-    ctx.strokeStyle='rgba(75,232,122,0.4)'; ctx.lineWidth=1; ctx.stroke();
-    ctx.font='26px serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText('⛵',p.x,p.y);
-  }
-
-  // Route mode hint
-  if (routeMode) {
-    ctx.fillStyle='rgba(77,200,232,0.07)';
-    ctx.fillRect(0,0,W,H);
-    ctx.fillStyle='rgba(77,200,232,0.8)';
-    ctx.font='12px DM Mono, monospace';
-    ctx.textAlign='center'; ctx.textBaseline='top';
-    ctx.fillText('✏ ROUTE-MODUS – Tippe auf die Karte',W/2,10);
-  }
+// ── rAF-GATED DRAW ──
+function scheduleDraw() {
+  if (drawPending) return;
+  drawPending = true;
+  requestAnimationFrame(() => { drawPending = false; draw(); });
 }
 
-// Pan
-canvas.addEventListener('mousedown', e => { drag.active=true; drag.sx=e.clientX; drag.sy=e.clientY; drag.slat=view.lat; drag.slng=view.lng; });
+function draw() {
+  try {
+    const W = canvas.width, H = canvas.height;
+    if (!W || !H) return;
+
+    ctx.fillStyle = '#0d1f35';
+    ctx.fillRect(0, 0, W, H);
+
+    const z    = Math.round(view.zoom);
+    const TS   = 256;
+    const maxT = 1 << z;
+    const cx   = W / 2, cy = H / 2;
+    const vx   = lng2tx(view.lng, z), vy = lat2ty(view.lat, z);
+    const tilesX = Math.ceil(W / TS / 2) + 2;
+    const tilesY = Math.ceil(H / TS / 2) + 2;
+
+    for (let dy = -tilesY; dy <= tilesY; dy++) {
+      for (let dx = -tilesX; dx <= tilesX; dx++) {
+        const tx = Math.floor(vx) + dx;
+        const ty = Math.floor(vy) + dy;
+        if (ty < 0 || ty >= maxT) continue;
+        const txw = ((tx % maxT) + maxT) % maxT;
+        const px  = Math.round(cx + (tx - vx) * TS);
+        const py  = Math.round(cy + (ty - vy) * TS);
+        const sub = ['a','b','c'][txw % 3];
+        const key = `${z}/${txw}/${ty}`;
+        const url = `https://${sub}.tile.openstreetmap.org/${z}/${txw}/${ty}.png`;
+        const img = getTile(url, key);
+        if (img && img !== 'err') {
+          try { ctx.drawImage(img, px, py, TS, TS); } catch(_) {}
+        }
+      }
+    }
+
+    // Route line
+    if (waypoints.length > 0) {
+      const pts = boatPos ? [boatPos, ...waypoints] : waypoints;
+      ctx.save();
+      ctx.strokeStyle = '#4dc8e8'; ctx.lineWidth = 2.5;
+      ctx.setLineDash([10, 5]);
+      ctx.beginPath();
+      pts.forEach((w, i) => {
+        const p = ll2px(w.lat, w.lng);
+        i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+      });
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.restore();
+
+      // Waypoint markers
+      waypoints.forEach((w, i) => {
+        const p = ll2px(w.lat, w.lng);
+        ctx.save();
+        ctx.beginPath(); ctx.arc(p.x, p.y, 11, 0, Math.PI * 2);
+        ctx.fillStyle = '#1a7fa0'; ctx.fill();
+        ctx.strokeStyle = '#4dc8e8'; ctx.lineWidth = 2; ctx.stroke();
+        ctx.fillStyle = '#fff'; ctx.font = 'bold 11px monospace';
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.fillText(i + 1, p.x, p.y);
+        ctx.restore();
+      });
+    }
+
+    // Boat marker
+    if (boatPos) {
+      const p = ll2px(boatPos.lat, boatPos.lng);
+      ctx.save();
+      ctx.beginPath(); ctx.arc(p.x, p.y, 22, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(75,232,122,0.12)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(75,232,122,0.4)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.font = '26px serif';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('⛵', p.x, p.y);
+      ctx.restore();
+    }
+
+    // Route-mode overlay
+    if (routeMode) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(77,200,232,0.06)';
+      ctx.fillRect(0, 0, W, H);
+      ctx.fillStyle = 'rgba(77,200,232,0.85)';
+      ctx.font = '13px DM Mono, monospace';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText('✏  ROUTE-MODUS – Tippe auf die Karte', W / 2, 12);
+      ctx.restore();
+    }
+  } catch(e) { console.error('draw error', e); }
+}
+
+// ── PAN (mouse) ──
+canvas.addEventListener('mousedown', e => {
+  drag.active = true;
+  drag.sx = e.clientX; drag.sy = e.clientY;
+  drag.slat = view.lat; drag.slng = view.lng;
+});
 canvas.addEventListener('mousemove', e => {
   if (!drag.active) return;
-  const z=Math.round(view.zoom), TS=256;
-  const ctx_=lng2tx(drag.slng,z), cty_=lat2ty(drag.slat,z);
-  const ntx=ctx_-(e.clientX-drag.sx)/TS, nty=cty_-(e.clientY-drag.sy)/TS;
-  view.lng=tx2lng(ntx,z); view.lat=ty2lat(nty,z); draw();
+  const z = Math.round(view.zoom), TS = 256;
+  const vx = lng2tx(drag.slng, z), vy = lat2ty(drag.slat, z);
+  view.lng = tx2lng(vx - (e.clientX - drag.sx) / TS, z);
+  view.lat = ty2lat(vy - (e.clientY - drag.sy) / TS, z);
+  scheduleDraw();
 });
-canvas.addEventListener('mouseup',()=>drag.active=false);
-canvas.addEventListener('mouseleave',()=>drag.active=false);
+canvas.addEventListener('mouseup',    () => { drag.active = false; });
+canvas.addEventListener('mouseleave', () => { drag.active = false; });
+
+// Click to add waypoint (mouse only)
 canvas.addEventListener('click', e => {
   if (!routeMode) return;
-  const r=canvas.getBoundingClientRect();
-  const ll=px2ll(e.clientX-r.left, e.clientY-r.top);
-  addWaypoint(ll.lat,ll.lng);
+  const r  = canvas.getBoundingClientRect();
+  const ll = px2ll(e.clientX - r.left, e.clientY - r.top);
+  addWaypoint(ll.lat, ll.lng);
 });
+
+// Scroll zoom
 canvas.addEventListener('wheel', e => {
   e.preventDefault();
-  view.zoom=Math.max(3,Math.min(18,view.zoom-e.deltaY*0.005)); draw();
-},{passive:false});
+  view.zoom = Math.max(3, Math.min(18, view.zoom - e.deltaY * 0.004));
+  scheduleDraw();
+}, { passive: false });
 
-// Touch
-canvas.addEventListener('touchstart', e => {
-  if (e.touches.length!==1) return;
-  drag.active=true;
-  drag.sx=e.touches[0].clientX; drag.sy=e.touches[0].clientY;
-  drag.slat=view.lat; drag.slng=view.lng;
-  lastTouchTime=Date.now(); lastTouchX=drag.sx; lastTouchY=drag.sy;
-},{passive:true});
-canvas.addEventListener('touchmove', e => {
-  if (!drag.active||e.touches.length!==1) return;
-  const z=Math.round(view.zoom),TS=256;
-  const ctx_=lng2tx(drag.slng,z), cty_=lat2ty(drag.slat,z);
-  const ntx=ctx_-(e.touches[0].clientX-drag.sx)/TS, nty=cty_-(e.touches[0].clientY-drag.sy)/TS;
-  view.lng=tx2lng(ntx,z); view.lat=ty2lat(nty,z); draw();
-},{passive:true});
-canvas.addEventListener('touchend', e => {
-  const dt=Date.now()-lastTouchTime;
-  const moved=Math.abs(e.changedTouches[0].clientX-lastTouchX)+Math.abs(e.changedTouches[0].clientY-lastTouchY);
-  if (dt<250 && moved<12 && routeMode) {
-    const r=canvas.getBoundingClientRect();
-    const ll=px2ll(e.changedTouches[0].clientX-r.left, e.changedTouches[0].clientY-r.top);
-    addWaypoint(ll.lat,ll.lng);
-  }
-  drag.active=false;
-});
+// ── TOUCH – pan + pinch-zoom ──
+let lastTapTime = 0, lastTapX = 0, lastTapY = 0;
 
-function zoomIn(){view.zoom=Math.min(18,view.zoom+1);draw();}
-function zoomOut(){view.zoom=Math.max(3,view.zoom-1);draw();}
-function toggleRouteMode(){
-  routeMode=!routeMode;
-  document.getElementById('btnRoute').classList.toggle('on',routeMode);
-  showToast(routeMode?'✏ Route-Modus aktiv – Tippe auf Karte':'Route-Modus deaktiviert');
-  draw();
+function touchDist(t) {
+  const dx = t[0].clientX - t[1].clientX;
+  const dy = t[0].clientY - t[1].clientY;
+  return Math.sqrt(dx*dx + dy*dy);
 }
 
-// Waypoints
-function addWaypoint(lat,lng){
-  waypoints.push({lat,lng}); updateRoute(); renderWPList();
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();   // must be non-passive to block browser scroll/zoom
+  if (e.touches.length === 1) {
+    drag.active = true;
+    drag.sx = e.touches[0].clientX; drag.sy = e.touches[0].clientY;
+    drag.slat = view.lat; drag.slng = view.lng;
+    pinch.active = false;
+    lastTapTime = Date.now();
+    lastTapX = drag.sx; lastTapY = drag.sy;
+  } else if (e.touches.length === 2) {
+    drag.active = false;
+    pinch.active = true;
+    pinch.d0 = touchDist(e.touches);
+    pinch.z0 = view.zoom;
+    pinch.clat = view.lat; pinch.clng = view.lng;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  if (pinch.active && e.touches.length === 2) {
+    const d = touchDist(e.touches);
+    if (pinch.d0 > 0) {
+      view.zoom = Math.max(3, Math.min(18, pinch.z0 + Math.log2(d / pinch.d0)));
+    }
+    scheduleDraw();
+  } else if (drag.active && e.touches.length === 1) {
+    const z = Math.round(view.zoom), TS = 256;
+    const vx = lng2tx(drag.slng, z), vy = lat2ty(drag.slat, z);
+    view.lng = tx2lng(vx - (e.touches[0].clientX - drag.sx) / TS, z);
+    view.lat = ty2lat(vy - (e.touches[0].clientY - drag.sy) / TS, z);
+    scheduleDraw();
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchend', e => {
+  e.preventDefault();
+  if (pinch.active) { pinch.active = false; drag.active = false; return; }
+  if (drag.active) {
+    const t  = e.changedTouches[0];
+    const dt = Date.now() - lastTapTime;
+    const moved = Math.abs(t.clientX - lastTapX) + Math.abs(t.clientY - lastTapY);
+    if (dt < 250 && moved < 14 && routeMode) {
+      const r  = canvas.getBoundingClientRect();
+      const ll = px2ll(t.clientX - r.left, t.clientY - r.top);
+      addWaypoint(ll.lat, ll.lng);
+    }
+    drag.active = false;
+  }
+}, { passive: false });
+
+canvas.addEventListener('touchcancel', () => { drag.active = false; pinch.active = false; });
+
+// ── ZOOM BUTTONS ──
+function zoomIn()  { view.zoom = Math.min(18, Math.round(view.zoom) + 1); scheduleDraw(); }
+function zoomOut() { view.zoom = Math.max(3,  Math.round(view.zoom) - 1); scheduleDraw(); }
+
+function toggleRouteMode() {
+  routeMode = !routeMode;
+  document.getElementById('btnRoute').classList.toggle('on', routeMode);
+  showToast(routeMode ? '✏ Route-Modus aktiv – Tippe auf Karte' : 'Route-Modus deaktiviert');
+  scheduleDraw();
+}
+
+// ── WAYPOINTS ──
+function addWaypoint(lat, lng) {
+  waypoints.push({lat, lng});
+  updateRoute(); renderWPList();
   showToast(`Wegpunkt ${waypoints.length} gesetzt`);
 }
-function removeWaypoint(i){ waypoints.splice(i,1); updateRoute(); renderWPList(); }
-function clearRoute(){ waypoints=[]; updateRoute(); renderWPList(); showToast('Route gelöscht'); }
+function removeWaypoint(i) { waypoints.splice(i, 1); updateRoute(); renderWPList(); }
+function clearRoute() { waypoints = []; updateRoute(); renderWPList(); showToast('Route gelöscht'); }
 
-function haversineNm(a,b,c,d){
-  const R=3440.065,dL=(c-a)*Math.PI/180,dG=(d-b)*Math.PI/180;
-  const x=Math.sin(dL/2)**2+Math.cos(a*Math.PI/180)*Math.cos(c*Math.PI/180)*Math.sin(dG/2)**2;
-  return R*2*Math.atan2(Math.sqrt(x),Math.sqrt(1-x));
+function haversineNm(a, b, c, d) {
+  const R  = 3440.065;
+  const dL = (c - a) * Math.PI / 180, dG = (d - b) * Math.PI / 180;
+  const x  = Math.sin(dL/2)**2 + Math.cos(a*Math.PI/180) * Math.cos(c*Math.PI/180) * Math.sin(dG/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
 }
-function updateRoute(){
-  const all=boatPos?[{lat:boatPos.lat,lng:boatPos.lng},...waypoints]:waypoints;
-  let d=0; for(let i=1;i<all.length;i++) d+=haversineNm(all[i-1].lat,all[i-1].lng,all[i].lat,all[i].lng);
-  document.getElementById('totalDist').textContent=d.toFixed(1);
-  document.getElementById('wpCount').textContent=waypoints.length;
-  draw();
+function updateRoute() {
+  const all = boatPos ? [{lat:boatPos.lat, lng:boatPos.lng}, ...waypoints] : waypoints;
+  let d = 0;
+  for (let i = 1; i < all.length; i++)
+    d += haversineNm(all[i-1].lat, all[i-1].lng, all[i].lat, all[i].lng);
+  const fmt = fmtDist(d);
+  document.getElementById('totalDist').textContent = fmt.val;
+  document.getElementById('distUnit').textContent  = fmt.unit;
+  document.getElementById('wpCount').textContent   = waypoints.length;
+  scheduleDraw();
 }
-function renderWPList(){
-  document.getElementById('wpHint').style.display=waypoints.length?'none':'block';
-  document.getElementById('wpList').innerHTML=waypoints.map((w,i)=>`
+function renderWPList() {
+  document.getElementById('wpHint').style.display = waypoints.length ? 'none' : 'block';
+  document.getElementById('wpList').innerHTML = waypoints.map((w, i) => `
     <div class="wp-item">
       <div class="wp-num">${i+1}</div>
-      <div><div class="wp-coords">${w.lat.toFixed(5)}° N  ${w.lng.toFixed(5)}° E</div><div style="font-size:12px;color:var(--muted)">Wegpunkt ${i+1}</div></div>
+      <div>
+        <div class="wp-coords">${w.lat.toFixed(5)}° N &nbsp;${w.lng.toFixed(5)}° E</div>
+        <div style="font-size:12px;color:var(--muted)">Wegpunkt ${i+1}</div>
+      </div>
       <button class="wp-del" onclick="removeWaypoint(${i})">✕</button>
     </div>`).join('');
 }
 
-// GPS
-function startGPS(){
-  if(!navigator.geolocation) return;
-  navigator.geolocation.watchPosition(p=>{
-    const {latitude:lat,longitude:lng,speed,heading}=p.coords;
-    boatPos={lat,lng};
-    const kn=speed?(speed*1.94384):0;
-    document.getElementById('gpsDot').classList.add('active');
-    document.getElementById('gpsLabel').textContent=`${lat.toFixed(4)}° ${lng.toFixed(4)}°`;
-    document.getElementById('speedVal').textContent=kn.toFixed(1);
-    document.getElementById('headingVal').textContent=`HDG ${heading?Math.round(heading):'–'}°`;
-    updateRoute();
-  },()=>{}, {enableHighAccuracy:true,maximumAge:3000,timeout:15000});
+// ── GPS ──
+let gpsWatchId = null;
+function startGPS() {
+  if (!navigator.geolocation) {
+    document.getElementById('gpsLabel').textContent = 'KEIN GPS';
+    return;
+  }
+  gpsWatchId = navigator.geolocation.watchPosition(
+    pos => {
+      try {
+        const {latitude:lat, longitude:lng, speed, heading} = pos.coords;
+        boatPos = {lat, lng};
+        const kn = (speed != null && speed >= 0) ? (speed * 1.94384) : 0;
+        document.getElementById('gpsDot').classList.add('active');
+        document.getElementById('gpsLabel').textContent = `${lat.toFixed(4)}° ${lng.toFixed(4)}°`;
+        document.getElementById('speedVal').textContent = kn.toFixed(1);
+        document.getElementById('headingVal').textContent =
+          (heading != null) ? `HDG ${Math.round(heading)}°` : 'HDG –°';
+        updateRoute();
+      } catch(e) { console.error('GPS callback error', e); }
+    },
+    err => {
+      const msgs = ['','GPS gesperrt','GPS nicht verfügbar','GPS Timeout'];
+      document.getElementById('gpsLabel').textContent = msgs[err.code] || 'GPS Fehler';
+    },
+    { enableHighAccuracy: true, maximumAge: 4000, timeout: 20000 }
+  );
+}
+
+function centerOnMe() {
+  if (boatPos) {
+    view.lat = boatPos.lat; view.lng = boatPos.lng; view.zoom = 13;
+    scheduleDraw();
+    showToast('Auf Position zentriert');
+  } else {
+    showToast('Noch kein GPS-Signal');
+  }
 }
 function centerOnMe(){
   if(boatPos){view.lat=boatPos.lat;view.lng=boatPos.lng;view.zoom=13;draw();showToast('Auf Position zentriert');}
@@ -654,38 +858,61 @@ function centerOnMe(){
 }
 
 // Wetter
+let weatherLoading = false;
 async function loadWeather(){
-  const el=document.getElementById('weatherContent');
-  if(!boatPos){el.innerHTML=`<div style="text-align:center;padding:40px;color:var(--muted)">🌊<br><br>GPS wird benötigt.</div>`;return;}
-  el.innerHTML=`<div style="text-align:center;padding:40px;color:var(--muted)">⏳ Lade Wetterdaten…</div>`;
-  try{
-    const {lat,lng}=boatPos;
-    const r=await fetch(`https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,weathercode,windspeed_10m,winddirection_10m,precipitation,cloudcover,visibility&wind_speed_unit=kn&forecast_days=1`);
-    const d=await r.json(); const c=d.current;
-    const bft=knotsToBeaufort(c.windspeed_10m);
-    const wDir=degToDir(c.winddirection_10m);
-    const wC=bft>=6?'var(--red)':bft>=4?'var(--gold)':'var(--green)';
-    const wT=bft>=7?'⚠ STURM – Nicht auslaufen!':bft>=5?'⚠ Frischer Wind – Vorsicht':'✓ Gute Bedingungen';
-    el.innerHTML=`
+  if (weatherLoading) return;
+  const el = document.getElementById('weatherContent');
+  if (!boatPos) {
+    el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--muted)">🌊<br><br>GPS wird benötigt.<br>Bitte Standort freigeben.</div>`;
+    return;
+  }
+  weatherLoading = true;
+  el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--muted)">⏳ Lade Wetterdaten…</div>`;
+  try {
+    const {lat, lng} = boatPos;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10000);
+    const r = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m,weathercode,windspeed_10m,winddirection_10m,precipitation,cloudcover,visibility&wind_speed_unit=kn&forecast_days=1`,
+      { signal: controller.signal }
+    );
+    clearTimeout(timer);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const d = await r.json();
+    const c = d.current;
+    if (!c) throw new Error('Keine Wetterdaten');
+    const bft  = knotsToBeaufort(c.windspeed_10m);
+    const wDir = degToDir(c.winddirection_10m);
+    const wC   = bft >= 6 ? 'var(--red)' : bft >= 4 ? 'var(--gold)' : 'var(--green)';
+    const wT   = bft >= 7 ? '⚠ STURM – Nicht auslaufen!' : bft >= 5 ? '⚠ Frischer Wind – Vorsicht' : '✓ Gute Bedingungen';
+    el.innerHTML = `
       <div class="weather-hero">
         <div>
-          <div style="color:var(--foam);font-size:13px;margin-bottom:4px">📍 ${lat.toFixed(2)}°N ${lng.toFixed(2)}°E</div>
+          <div style="color:var(--foam);font-size:var(--fs-sm);margin-bottom:4px">📍 ${lat.toFixed(2)}°N ${lng.toFixed(2)}°E</div>
           <div class="weather-temp">${Math.round(c.temperature_2m)}°</div>
-          <div style="color:var(--muted);font-size:13px;margin-top:4px">${weatherDesc(c.weathercode)}</div>
+          <div style="color:var(--muted);font-size:var(--fs-sm);margin-top:4px">${weatherDesc(c.weathercode)}</div>
         </div>
         <div class="weather-icon-big">${weatherIcon(c.weathercode)}</div>
       </div>
-      <div style="background:${wC}22;border:1px solid ${wC};border-radius:10px;padding:12px 14px;margin-bottom:14px;color:${wC};font-size:13px;font-weight:500">${wT}</div>
+      <div style="background:${wC}22;border:1px solid ${wC};border-radius:var(--r);padding:12px 14px;margin-bottom:14px;color:${wC};font-size:var(--fs-sm);font-weight:500">${wT}</div>
       <div class="stat-grid">
         <div class="stat-card"><div class="stat-label">Wind</div><div class="stat-val">${Math.round(c.windspeed_10m)}</div><div class="stat-sub">Knoten · BFT ${bft}</div></div>
         <div class="stat-card"><div class="stat-label">Richtung</div><div class="stat-val">${wDir}</div><div class="stat-sub">${Math.round(c.winddirection_10m)}°</div></div>
         <div class="stat-card"><div class="stat-label">Sichtweite</div><div class="stat-val">${(c.visibility/1000).toFixed(0)}</div><div class="stat-sub">km</div></div>
         <div class="stat-card"><div class="stat-label">Bewölkung</div><div class="stat-val">${c.cloudcover}</div><div class="stat-sub">Prozent</div></div>
         <div class="stat-card"><div class="stat-label">Niederschlag</div><div class="stat-val">${c.precipitation}</div><div class="stat-sub">mm</div></div>
-        <div class="stat-card"><div class="stat-label">Böen est.</div><div class="stat-val">${Math.round(c.windspeed_10m*1.4)}</div><div class="stat-sub">Knoten</div></div>
+        <div class="stat-card"><div class="stat-label">Böen est.</div><div class="stat-val">${Math.round(c.windspeed_10m * 1.4)}</div><div class="stat-sub">Knoten</div></div>
       </div>
-      <div style="font-size:10px;color:var(--muted);text-align:center;font-family:'DM Mono',monospace">Open-Meteo · ${new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}</div>`;
-  }catch(e){el.innerHTML=`<div style="text-align:center;padding:40px;color:var(--red)">❌ ${e.message}</div>`;}
+      <div style="font-size:var(--fs-xs);color:var(--muted);text-align:center;font-family:'DM Mono',monospace;padding-bottom:8px">
+        Open-Meteo · ${new Date().toLocaleTimeString('de-DE',{hour:'2-digit',minute:'2-digit'})}
+      </div>`;
+  } catch(e) {
+    const msg = e.name === 'AbortError' ? 'Zeitüberschreitung – bitte erneut versuchen' : e.message;
+    el.innerHTML = `<div style="text-align:center;padding:40px;color:var(--red)">❌ ${msg}<br><br>
+      <button class="btn-primary" onclick="loadWeather()" style="max-width:200px">↺ Erneut laden</button></div>`;
+  } finally {
+    weatherLoading = false;
+  }
 }
 function knotsToBeaufort(k){return k<1?0:k<4?1:k<7?2:k<11?3:k<16?4:k<22?5:k<28?6:k<34?7:k<41?8:k<48?9:k<56?10:k<64?11:12;}
 function degToDir(d){return['N','NNO','NO','ONO','O','OSO','SO','SSO','S','SSW','SW','WSW','W','WNW','NW','NNW'][Math.round(d/22.5)%16];}
@@ -700,14 +927,14 @@ function calcFuel(){
   const spd=parseFloat(document.getElementById('fSpeed').value);
   const saf=parseFloat(document.getElementById('fSafety').value);
   if(!tank||!cons||!spd){showToast('Bitte alle Felder ausfüllen');return;}
-  const usable=(tank-res)*saf, time=usable/cons, range=time*spd;
+  const usable=(tank-res)*saf, time=usable/cons, rangeNm=time*spd;
+  // Store raw nm values for unit switching
+  _lastFuelNm = { range: rangeNm, perNm: cons/spd, turn: rangeNm/2, consRaw: cons, speedRaw: spd };
   document.getElementById('rUsable').textContent=usable.toFixed(0);
   document.getElementById('rTime').textContent=time.toFixed(1);
-  document.getElementById('rRange').textContent=range.toFixed(1);
-  document.getElementById('rPerNm').textContent=(cons/spd).toFixed(1);
-  document.getElementById('rTurn').textContent=(range/2).toFixed(1);
+  updateFuelUnits();
   document.getElementById('fuelResult').classList.add('show');
-  document.getElementById('fuelWarn').style.display=range<10?'block':'none';
+  document.getElementById('fuelWarn').style.display=rangeNm<10?'block':'none';
 }
 
 // Regeln
@@ -787,8 +1014,16 @@ function showToast(msg){
 }
 
 // Init
-window.addEventListener('DOMContentLoaded',()=>{ resize(); renderRules(); startGPS(); });
-window.addEventListener('resize', resize);
+let resizeTimer = null;
+window.addEventListener('DOMContentLoaded', () => {
+  resize();
+  renderRules();
+  startGPS();
+});
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(resize, 100);
+});
 </script>
 </body>
 </html>
